@@ -32,6 +32,20 @@ result = matcher.extract(img0)
 plot_keypoints(img0, result, save_path="kpts.png")
 ```
 
+## Batch Matching
+
+Pass a batch of pairs as `(B, 3, H, W)` tensors/arrays or as lists of images (paths, PIL Images, or
+`(3, H, W)` tensors/arrays; sizes may differ within a list). The result is a list with one result dict per
+pair; a single pair still returns a single dict.
+
+```python
+results = matcher([img0, img1], [img1, img0])
+# results[0] matches img0 -> img1, results[1] matches img1 -> img0
+
+kpts = matcher.extract([img0, img1])
+# kpts[0]["all_kpts0"], kpts[1]["all_kpts0"]
+```
+
 ## Ensemble Matching
 
 Pass a list of matcher names to combine multiple models:
