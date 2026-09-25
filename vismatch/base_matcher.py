@@ -5,7 +5,7 @@ from PIL import Image
 from pathlib import Path
 
 from vismatch.import_sandbox import sandboxed_method
-from vismatch.utils import to_normalized_coords, to_px_coords, to_numpy, _load_image, to_tensor_image
+from vismatch.utils import to_normalized_coords, to_px_coords, to_numpy, _load_image, to_tensor_image, is_batch
 
 
 class BaseMatcher(torch.nn.Module):
@@ -114,17 +114,18 @@ class BaseMatcher(torch.nn.Module):
     @torch.inference_mode()
     def forward(
         self,
-        img0: torch.Tensor | np.ndarray | str | Path | Image.Image,
-        img1: torch.Tensor | np.ndarray | str | Path | Image.Image,
-    ) -> dict:
-        """Run matching pipeline on two images. All sub-classes implement this interface.
+        img0: torch.Tensor | np.ndarray | str | Path | Image.Image | list,
+        img1: torch.Tensor | np.ndarray | str | Path | Image.Image | list,
+    ) -> dict | list[dict]:
+        """Run matching pipeline on two images, or on a batch of image pairs. All sub-classes implement this interface.
 
         Args:
-            img0 (torch.Tensor | np.ndarray | str | Path | Image.Image): image as (3, H, W) array in [0, 1] range, path, or PIL Image
-            img1 (torch.Tensor | np.ndarray | str | Path | Image.Image): image as (3, H, W) array in [0, 1] range, path, or PIL Image
+            img0 (torch.Tensor | np.ndarray | str | Path | Image.Image | list): image as (3, H, W) array in [0, 1] range, path, or PIL Image;
+                or a batch: a (B, 3, H, W) array or a list of such images
+            img1 (torch.Tensor | np.ndarray | str | Path | Image.Image | list): same as img0; for a batch, pair i is (img0[i], img1[i])
 
         Returns:
-            dict: result dict with keys:
+            dict | list[dict]: result dict (for a batch, a list with one per pair) with keys:
                 - num_inliers (int): number of inliers after RANSAC, i.e. len(inlier_kpts0)
                 - H (np.ndarray): (3 x 3) homography matrix to map matched_kpts0 to matched_kpts1
                 - all_kpts0 (np.ndarray): (N0 x 2) all detected keypoints from img0
@@ -138,7 +139,14 @@ class BaseMatcher(torch.nn.Module):
                 - matched_confidences (np.ndarray | None): (N2,) per-match confidence scores, None if the matcher does not provide confidence (pre-RANSAC).
         """
 
-        # Take as input a pair of images (not a batch)
+        # A batch of pairs is matched one pair at a time
+        if is_batch(img0) or is_batch(img1):
+            assert is_batch(img0) and is_batch(img1) and len(img0) == len(img1), (
+                "img0 and img1 must both be single images or batches of the same length"
+            )
+            return [self.forward(i0, i1) for i0, i1 in zip(img0, img1)]
+
+        # Take as input a pair of images
         img0 = to_tensor_image(img0).to(self.device)
         img1 = to_tensor_image(img1).to(self.device)
 
@@ -198,17 +206,22 @@ class BaseMatcher(torch.nn.Module):
             "matched_confidences": matched_confidences,
         }
 
-    def extract(self, img: torch.Tensor | np.ndarray | str | Path | Image.Image) -> dict[str, np.ndarray]:
-        """Extract keypoints and descriptors from a single image.
+    def extract(
+        self, img: torch.Tensor | np.ndarray | str | Path | Image.Image | list
+    ) -> dict[str, np.ndarray] | list[dict[str, np.ndarray]]:
+        """Extract keypoints and descriptors from a single image, or from each image of a batch.
 
         Args:
-            img (torch.Tensor | np.ndarray | str | Path | Image.Image): image as (3, H, W) array in [0, 1] range, path, or PIL Image
+            img (torch.Tensor | np.ndarray | str | Path | Image.Image | list): image as (3, H, W) array in [0, 1] range, path, or PIL Image;
+                or a batch: a (B, 3, H, W) array or a list of such images
 
         Returns:
-            dict: result dict with keys:
+            dict | list[dict]: result dict (for a batch, a list with one per image) with keys:
                 - all_kpts0 (np.ndarray): (N, 2) detected keypoints
                 - all_desc0 (np.ndarray): (N, D) descriptors
         """
+        if is_batch(img):
+            return [self.extract(i) for i in img]
         result = self.forward(img, img)
         kpts = result["matched_kpts0"] if isinstance(self, EnsembleMatcher) else result["all_kpts0"]
         return {"all_kpts0": kpts, "all_desc0": result["all_desc0"]}

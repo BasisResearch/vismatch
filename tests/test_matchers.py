@@ -97,6 +97,57 @@ def test_forward_removes_out_of_bounds_matches():
     np.testing.assert_allclose(result["matched_confidences"], confidences[:2])
 
 
+class _CornerMatcher(BaseMatcher):
+    """Matches each image's bottom-right pixel to the other's, so every result identifies its pair by image size."""
+
+    def _forward(self, img0, img1):
+        (h0, w0), (h1, w1) = img0.shape[-2:], img1.shape[-2:]
+        kpts0 = np.array([[w0 - 1, h0 - 1]], dtype=np.float32)
+        kpts1 = np.array([[w1 - 1, h1 - 1]], dtype=np.float32)
+        return kpts0, kpts1, kpts0, kpts1, None, None, None
+
+
+@pytest.mark.parametrize(
+    ("imgs0", "imgs1"),
+    [
+        ([torch.rand(3, 40, 60), torch.rand(3, 20, 30)], [torch.rand(3, 30, 50), torch.rand(3, 50, 70)]),
+        (torch.rand(2, 3, 40, 60), torch.rand(2, 3, 30, 50)),
+        (np.random.rand(2, 3, 40, 60).astype(np.float32), np.random.rand(2, 3, 30, 50).astype(np.float32)),
+    ],
+    ids=["list-mixed-sizes", "tensor", "numpy"],
+)
+def test_forward_batch_matches_each_pair(imgs0, imgs1):
+    """A batch of pairs returns one result dict per pair, equal to matching that pair on its own."""
+    matcher = _CornerMatcher()
+    results = matcher.forward(imgs0, imgs1)
+
+    assert isinstance(results, list) and len(results) == len(imgs0)
+    for result, img0, img1 in zip(results, imgs0, imgs1):
+        expected = matcher.forward(img0, img1)
+        np.testing.assert_array_equal(result["matched_kpts0"], expected["matched_kpts0"])
+        np.testing.assert_array_equal(result["matched_kpts1"], expected["matched_kpts1"])
+
+
+@pytest.mark.parametrize(
+    ("imgs0", "imgs1"),
+    [
+        (torch.rand(2, 3, 40, 60), torch.rand(3, 30, 50)),
+        ([torch.rand(3, 40, 60)] * 3, [torch.rand(3, 30, 50)] * 2),
+    ],
+    ids=["batch-vs-single", "length-mismatch"],
+)
+def test_forward_batch_mismatch_fails(imgs0, imgs1):
+    """img0 and img1 must both be single images or batches of the same length."""
+    with pytest.raises(AssertionError, match="batches of the same length"):
+        _CornerMatcher().forward(imgs0, imgs1)
+
+
+def test_extract_batch():
+    """extract() on a batch returns one result dict per image."""
+    results = _CornerMatcher().extract([torch.rand(3, 40, 60), torch.rand(3, 20, 30)])
+    assert [r["all_kpts0"].tolist() for r in results] == [[[59, 39]], [[29, 19]]]
+
+
 @pytest.mark.parametrize("model_name", available_models)
 def test_create_matcher(model_name, device):
     """Instantiate each available matcher and verify device assignment.
