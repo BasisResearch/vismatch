@@ -492,3 +492,8 @@ def to_tensor_image(img):
     # This is expected, not a bug, see https://github.com/opencv/opencv/issues/7195
     assert -0.2 <= img.min() and img.max() <= 1.2, f"img should be in [0, 1], got [{img.min()}, {img.max()}]"
     return img
+
+
+def is_batch(img) -> bool:
+    """Return True if img is a batch of images: a list/tuple of images or a (B, 3, H, W) array."""
+    return isinstance(img, (list, tuple)) or (isinstance(img, (torch.Tensor, np.ndarray)) and img.ndim == 4)

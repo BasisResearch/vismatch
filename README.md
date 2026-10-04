@@ -134,6 +134,15 @@ plot_matches(img0, img1, result, save_path="plot_matches.png")
 result = matcher.extract(img0)
 # result.keys() = ["all_kpts0", "all_desc0"]
 plot_keypoints(img0, result, save_path="plot_keypoints.png")
+
+# Batches of pairs: pass (B, 3, H, W) tensors or lists of images, get a list of B result dicts
+results = matcher([img0, img1], [img1, img0])
+# results[0] matches img0 -> img1, results[1] matches img1 -> img0
+
+# xfeat and loma (matcher.supports_batches): detect once per image, then match the cached features
+feats = matcher.extract([img0, img1])
+result = matcher.match(feats[0], feats[1])
+# result.keys() = forward()'s keys without all_kpts0/1 and all_desc0/1, plus ["matched_idxs0", "matched_idxs1"]
 ```
 
 ### Command Line Interface / Standalone Scripts

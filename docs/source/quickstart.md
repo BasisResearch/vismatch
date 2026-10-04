@@ -32,6 +32,33 @@ result = matcher.extract(img0)
 plot_keypoints(img0, result, save_path="kpts.png")
 ```
 
+## Batch Matching
+
+Pass a batch of pairs as `(B, 3, H, W)` tensors/arrays or as lists of images (paths, PIL Images, or
+`(3, H, W)` tensors/arrays; sizes may differ within a list). The result is a list with one result dict per
+pair; a single pair still returns a single dict.
+
+```python
+results = matcher([img0, img1], [img1, img0])
+# results[0] matches img0 -> img1, results[1] matches img1 -> img0
+
+kpts = matcher.extract([img0, img1])
+# kpts[0]["all_kpts0"], kpts[1]["all_kpts0"]
+```
+
+Matchers that detect each image independently (currently `xfeat` in sparse mode and `loma`) set
+`matcher.supports_batches = True`. For them, `extract()` runs one batched detection, and `match()` matches
+two `extract()` results without detecting again. Besides the usual match keys (without `all_kpts0/1` and
+`all_desc0/1`), it returns `matched_idxs0/1`, the rows of each image's `all_kpts0` behind the matches:
+
+```python
+feats = matcher.extract([img0, img1, img2])  # one detection pass
+result = matcher.match(feats[0], feats[2])
+# result["matched_kpts0"] == feats[0]["all_kpts0"][result["matched_idxs0"]]
+```
+
+Other matchers raise `NotImplementedError` from `match()`.
+
 ## Ensemble Matching
 
 Pass a list of matcher names to combine multiple models:
