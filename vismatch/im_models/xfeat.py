@@ -1,3 +1,4 @@
+import torch
 from torch import Tensor
 from huggingface_hub import snapshot_download
 from kornia.feature.lightglue import LightGlue
@@ -23,6 +24,8 @@ class xFeatMatcher(BaseMatcher):
 
         self.max_num_keypoints = max_num_keypoints
         self.mode = mode
+        # Sparse mode matches descriptors by mutual nearest neighbour, so it can match precomputed features
+        self.supports_batches = mode == "sparse"
 
         if self.mode == "lighterglue":
             # LighterGlue ignores the device we pass and moves itself to cuda-if-available; put it on self.device.
@@ -38,6 +41,20 @@ class xFeatMatcher(BaseMatcher):
         while img.ndim < 4:
             img = img.unsqueeze(0)
         return self.model.parse_input(img)
+
+    def _extract_features(self, imgs: list[Tensor]) -> list[dict]:
+        # Same-size images are detected in one batched forward, others one at a time
+        if all(img.shape == imgs[0].shape for img in imgs):
+            outputs = self.model.detectAndCompute(self.preprocess(torch.stack(imgs)), top_k=self.max_num_keypoints)
+        else:
+            outputs = [
+                self.model.detectAndCompute(self.preprocess(img), top_k=self.max_num_keypoints)[0] for img in imgs
+            ]
+        return [{"all_kpts0": out["keypoints"], "all_desc0": out["descriptors"]} for out in outputs]
+
+    def _match_features(self, feats0: dict, feats1: dict) -> tuple:
+        idxs0, idxs1 = self.model.match(feats0["all_desc0"], feats1["all_desc0"], min_cossim=-1)
+        return idxs0, idxs1, None
 
     def _forward(self, img0, img1):
         img0, img1 = self.preprocess(img0), self.preprocess(img1)

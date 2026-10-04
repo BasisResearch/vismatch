@@ -328,3 +328,90 @@ def test_forward_batch_native():
         expected = matcher.forward(img0, img1)
         for key in ("matched_kpts0", "matched_kpts1", "all_kpts0", "all_kpts1", "all_desc0", "all_desc1"):
             np.testing.assert_array_equal(result[key], expected[key])
+
+
+def _overlap(kpts_a, kpts_b):
+    """Fraction of keypoints in kpts_a that also appear in kpts_b (within 1e-3 px)."""
+    if len(kpts_a) == 0:
+        return 1.0 if len(kpts_b) == 0 else 0.0
+    dists = np.linalg.norm(kpts_a[:, None] - kpts_b[None], axis=-1)
+    return float((dists.min(1) < 1e-3).mean())
+
+
+def _load_pair(matcher, test_image_paths):
+    """The indoor test pair at 256 px, as (3, H, W) tensors."""
+    return [matcher.load_image(p, resize=256) for p in test_image_paths]
+
+
+@pytest.mark.parametrize("model_name", ["xfeat", "loma"])
+def test_extract_matches_forward(model_name, device, test_image_paths):
+    """For batching matchers, extract() returns exactly forward()'s keypoints and descriptors."""
+    try:
+        matcher = get_matcher(model_name, device=device)
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate {model_name} on {device}: {e}")
+    assert matcher.supports_batches
+    img, _ = _load_pair(matcher, test_image_paths)
+    feats, expected = matcher.extract(img), matcher.forward(img, img)
+    np.testing.assert_array_equal(feats["all_kpts0"], expected["all_kpts0"])
+    np.testing.assert_array_equal(feats["all_desc0"], expected["all_desc0"])
+
+
+@pytest.mark.parametrize("model_name", ["xfeat", "loma"])
+def test_match_matches_forward_model(model_name, device, test_image_paths):
+    """For batching matchers, match() on extract() outputs gives exactly forward()'s matches."""
+    try:
+        matcher = get_matcher(model_name, device=device)
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate {model_name} on {device}: {e}")
+    matcher.skip_ransac = True
+    img0, img1 = _load_pair(matcher, test_image_paths)
+    feats0, feats1 = matcher.extract(img0), matcher.extract(img1)
+    result, expected = matcher.match(feats0, feats1), matcher.forward(img0, img1)
+
+    assert len(result["matched_kpts0"]) > 0
+    np.testing.assert_array_equal(result["matched_kpts0"], expected["matched_kpts0"])
+    np.testing.assert_array_equal(result["matched_kpts1"], expected["matched_kpts1"])
+    if expected["matched_confidences"] is not None:
+        np.testing.assert_array_equal(result["matched_confidences"], expected["matched_confidences"])
+    np.testing.assert_array_equal(result["matched_kpts0"], feats0["all_kpts0"][result["matched_idxs0"]])
+    np.testing.assert_array_equal(result["matched_kpts1"], feats1["all_kpts0"][result["matched_idxs1"]])
+
+
+def test_extract_batch_xfeat(device, test_images):
+    """xfeat extract() on a batch matches single-image extract(): exactly for one image, closely for several."""
+    try:
+        matcher = get_matcher("xfeat", device=device)
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate xfeat on {device}: {e}")
+    singles = [matcher.extract(img) for img in test_images]
+
+    (one,) = matcher.extract([test_images[0]])
+    np.testing.assert_array_equal(one["all_kpts0"], singles[0]["all_kpts0"])
+    np.testing.assert_array_equal(one["all_desc0"], singles[0]["all_desc0"])
+
+    for batched, single in zip(matcher.extract(list(test_images)), singles):
+        assert _overlap(batched["all_kpts0"], single["all_kpts0"]) >= 0.99
+
+
+@pytest.mark.parametrize("model_name", ["xfeat", "loma"])
+def test_forward_batch_native_model(model_name, device, test_image_paths):
+    """A natively batched forward() matches nearly the same keypoints as forward() on each pair."""
+    try:
+        matcher = get_matcher(model_name, device=device)
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate {model_name} on {device}: {e}")
+    img0, img1 = _load_pair(matcher, test_image_paths)
+    results = matcher.forward([img0, img1], [img1, img0])
+    for result, (i0, i1) in zip(results, [(img0, img1), (img1, img0)]):
+        expected = matcher.forward(i0, i1)
+        assert _overlap(result["matched_kpts0"], expected["matched_kpts0"]) >= 0.99
+
+
+def test_xfeat_supports_batches_sparse_only():
+    """Only xfeat's sparse mode matches by descriptors alone, so only it batches natively."""
+    try:
+        flags = {name: get_matcher(name, device="cpu").supports_batches for name in ("xfeat", "xfeat-star")}
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate xfeat: {e}")
+    assert flags == {"xfeat": True, "xfeat-star": False}
