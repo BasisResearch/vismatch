@@ -14,6 +14,8 @@ vismatch_match.py:
   returns keypoints and descriptors.
 """
 
+import importlib
+
 import pytest
 import numpy as np
 import torch
@@ -232,6 +234,14 @@ def test_match_not_implemented():
     """match() needs a matcher with supports_batches; others must use forward()."""
     with pytest.raises(NotImplementedError, match="use forward"):
         _CornerMatcher().match({}, {})
+
+
+@pytest.mark.parametrize("module, cls", [("xfeat", "xFeatMatcher"), ("loma", "LoMaMatcher")])
+def test_match_features_not_sandboxed(module, cls):
+    """_extract_features runs in the wrapper's ImportSandbox; per-pair _match_features skips its entry cost."""
+    matcher_cls = getattr(importlib.import_module(f"vismatch.im_models.{module}"), cls)
+    assert getattr(matcher_cls._extract_features, "_sandbox_key", None) is not None
+    assert getattr(matcher_cls._match_features, "_sandbox_key", None) is None
 
 
 @pytest.mark.parametrize("model_name", available_models)

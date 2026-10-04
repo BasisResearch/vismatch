@@ -17,14 +17,16 @@ class BaseMatcher(torch.nn.Module):
     """
 
     def __init_subclass__(cls, **kwargs):
-        # Run each wrapper-defined matcher's __init__, _forward and feature hooks inside that wrapper's
+        # Run each wrapper-defined matcher's __init__, _forward and _extract_features inside that wrapper's
         # ImportSandbox: third-party code does lazy imports at construction time (MINIMA, EDM's
         # yacs configs) and at inference time (xfeat's lighterglue), and EnsembleMatcher /
         # Keypt2SubpxMatcher call inner matchers' _forward directly, bypassing forward().
+        # _match_features stays outside: it runs once per pair on already built modules, and entering
+        # the sandbox (tens of ms, it scans sys.modules) would cost far more than the match itself.
         super().__init_subclass__(**kwargs)
         if not cls.__module__.startswith("vismatch.im_models."):
             return
-        for method_name in ("__init__", "_forward", "_extract_features", "_match_features"):
+        for method_name in ("__init__", "_forward", "_extract_features"):
             method = cls.__dict__.get(method_name)
             if method is not None:
                 setattr(cls, method_name, sandboxed_method(method, cls.__module__))
@@ -38,7 +40,7 @@ class BaseMatcher(torch.nn.Module):
         #   _extract_features(imgs): (3, H, W) tensors on self.device -> one dict per image with all_kpts0 (N, 2),
         #     all_desc0 (N, D) and any tensor extras its _match_features needs
         #   _match_features(feats0, feats1): two such dicts on self.device -> (idxs0, idxs1, confidences or None),
-        #     without modifying its inputs
+        #     without modifying its inputs or importing; it runs outside the ImportSandbox
         self.supports_batches: bool = False
 
         self.skip_ransac: bool = False
