@@ -202,6 +202,37 @@ def test_extract_native_batch():
     assert [r["all_kpts0"][-1].tolist() for r in results] == [[59, 39], [29, 19]]
 
 
+def test_match_matches_forward():
+    """match() on extract() outputs gives forward()'s matches, plus the keypoint rows behind them."""
+    matcher = _GridMatcher()
+    matcher.skip_ransac = True
+    img0, img1 = torch.rand(3, 40, 60), torch.rand(3, 30, 50)
+    feats0, feats1 = matcher.extract(img0), matcher.extract(img1)
+    result, expected = matcher.match(feats0, feats1), matcher.forward(img0, img1)
+
+    np.testing.assert_array_equal(result["matched_kpts0"], expected["matched_kpts0"])
+    np.testing.assert_array_equal(result["matched_kpts1"], expected["matched_kpts1"])
+    np.testing.assert_array_equal(result["matched_kpts0"], feats0["all_kpts0"][result["matched_idxs0"]])
+    np.testing.assert_array_equal(result["matched_kpts1"], feats1["all_kpts0"][result["matched_idxs1"]])
+    assert result["num_inliers"] == expected["num_inliers"] == 0
+
+
+def test_match_drops_out_of_bounds_matches():
+    """match() drops matches with a keypoint outside its image, keeping indices aligned with keypoints."""
+    matcher = _GridMatcher()
+    feats0, feats1 = matcher.extract(torch.rand(3, 40, 60)), matcher.extract(torch.rand(3, 40, 60))
+    feats1["image_size"] = (31, 21)  # only the (0, 0) and (30, 20) keypoints are inside
+    result = matcher.match(feats0, feats1)
+    assert result["matched_idxs1"].tolist() == [0, 1]
+    assert result["matched_confidences"].tolist() == [1.0, 1.0]
+
+
+def test_match_not_implemented():
+    """match() needs a matcher with supports_batches; others must use forward()."""
+    with pytest.raises(NotImplementedError, match="use forward"):
+        _CornerMatcher().match({}, {})
+
+
 @pytest.mark.parametrize("model_name", available_models)
 def test_create_matcher(model_name, device):
     """Instantiate each available matcher and verify device assignment.

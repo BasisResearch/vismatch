@@ -242,6 +242,61 @@ class BaseMatcher(torch.nn.Module):
         kpts = result["matched_kpts0"] if isinstance(self, EnsembleMatcher) else result["all_kpts0"]
         return {"all_kpts0": kpts, "all_desc0": result["all_desc0"]}
 
+    @torch.inference_mode()
+    def match(self, feats0: dict, feats1: dict) -> dict:
+        """Match two images from their extract() outputs, without detecting again. Needs supports_batches.
+
+        Args:
+            feats0 (dict): extract() output for img0; values may be np.ndarray or torch.Tensor on any device
+            feats1 (dict): extract() output for img1
+
+        Returns:
+            dict: result dict with the keys of forward() except all_kpts0/1 and all_desc0/1, plus:
+                - matched_idxs0 (np.ndarray): (N2,) rows of feats0["all_kpts0"] behind matched_kpts0
+                - matched_idxs1 (np.ndarray): (N2,) rows of feats1["all_kpts0"] behind matched_kpts1
+        """
+        if not self.supports_batches:
+            raise NotImplementedError(f"{self.name} cannot match precomputed features, use forward()")
+
+        # Move features to the matcher's device, a no-op for features already there
+        (w0, h0), (w1, h1) = feats0["image_size"], feats1["image_size"]
+        feats0, feats1 = (
+            {k: torch.as_tensor(v, device=self.device) for k, v in f.items() if k != "image_size"}
+            for f in (feats0, feats1)
+        )
+
+        # self._match_features() returns indices into each keypoint table, and confidences or None
+        idxs0, idxs1, matched_confidences = self._match_features(feats0, feats1)
+        matched_kpts0, matched_kpts1 = to_numpy(feats0["all_kpts0"][idxs0]), to_numpy(feats1["all_kpts0"][idxs1])
+        idxs0, idxs1, matched_confidences = to_numpy(idxs0), to_numpy(idxs1), to_numpy(matched_confidences)
+
+        # Drop matches with a kpt outside its image, as forward() does
+        valid = (
+            (matched_kpts0 >= 0) & (matched_kpts0 < [w0, h0]) & (matched_kpts1 >= 0) & (matched_kpts1 < [w1, h1])
+        ).all(1)
+        matched_kpts0, matched_kpts1, idxs0, idxs1 = (
+            matched_kpts0[valid],
+            matched_kpts1[valid],
+            idxs0[valid],
+            idxs1[valid],
+        )
+        if matched_confidences is not None:
+            matched_confidences = matched_confidences[valid]
+
+        H, inlier_kpts0, inlier_kpts1 = self.compute_ransac(matched_kpts0, matched_kpts1)
+
+        return {
+            "num_inliers": len(inlier_kpts0),
+            "H": H,
+            "matched_kpts0": matched_kpts0,
+            "matched_kpts1": matched_kpts1,
+            "inlier_kpts0": inlier_kpts0,
+            "inlier_kpts1": inlier_kpts1,
+            "matched_confidences": matched_confidences,
+            "matched_idxs0": idxs0,
+            "matched_idxs1": idxs1,
+        }
+
     @staticmethod
     def get_empty_array_if_none(array: np.ndarray | None) -> np.ndarray:
         if array is None or array.size == 0:
