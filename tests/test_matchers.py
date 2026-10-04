@@ -320,9 +320,13 @@ def test_forward_batch_native():
     """With supports_batches, a batch of pairs matches through extract() and match(), equal to each pair on its own."""
     matcher = _GridMatcher()
     imgs0, imgs1 = [torch.rand(3, 40, 60), torch.rand(3, 20, 30)], [torch.rand(3, 30, 50), torch.rand(3, 50, 70)]
-    with patch.object(matcher, "_forward", wraps=matcher._forward) as forward_spy:
+    with (
+        patch.object(matcher, "_forward", wraps=matcher._forward) as forward_spy,
+        patch.object(matcher, "_extract_features", wraps=matcher._extract_features) as extract_spy,
+    ):
         results = matcher.forward(imgs0, imgs1)
     assert forward_spy.call_count == 0
+    assert [len(call.args[0]) for call in extract_spy.call_args_list] == [2, 2]
 
     for result, img0, img1 in zip(results, imgs0, imgs1):
         expected = matcher.forward(img0, img1)

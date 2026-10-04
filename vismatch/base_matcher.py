@@ -34,6 +34,11 @@ class BaseMatcher(torch.nn.Module):
         self.device: str = device
 
         # Matchers that set this to True batch natively; others loop over a batch one pair at a time
+        # A True matcher defines the two hooks behind extract() and match():
+        #   _extract_features(imgs): (3, H, W) tensors on self.device -> one dict per image with all_kpts0 (N, 2),
+        #     all_desc0 (N, D) and any tensor extras its _match_features needs
+        #   _match_features(feats0, feats1): two such dicts on self.device -> (idxs0, idxs1, confidences or None),
+        #     without modifying its inputs
         self.supports_batches: bool = False
 
         self.skip_ransac: bool = False
