@@ -58,12 +58,36 @@ class LoMaMatcher(BaseMatcher):
         # This automatically loads weights using torch.hub.load_state_dict_from_url
         self.matcher = LoMa(cfg).to(self.device)
 
+        # LoMa detects and describes each image on its own, so it can match precomputed features
+        self.supports_batches = True
+
     def preprocess(self, img):
         _, h, w = img.shape
         orig_shape = h, w
         img = resize_to_divisible(img, self.divisible_size)
         img = img.unsqueeze(0).to(self.device)
         return img, orig_shape
+
+    def _extract_features(self, imgs: list[torch.Tensor]) -> list[dict]:
+        feats = []
+        for img in imgs:
+            img, (h, w) = self.preprocess(img)
+            H, W = img.shape[-2:]
+            kpts, desc, _, _ = self.matcher.detect_and_describe(img, self.max_num_keypoints)
+            # Same pixel coords as _forward's all_kpts; the matcher consumes the normalized kpts, kept as an extra
+            all_kpts = self.rescale_coords(to_pixel_coords(kpts[0], H, W), h, w, H, W) - 0.5
+            feats.append({"all_kpts0": all_kpts, "all_desc0": desc[0], "kpts_normalized": kpts[0]})
+        return feats
+
+    def _match_features(self, feats0: dict, feats1: dict) -> tuple:
+        k0, k1 = feats0["kpts_normalized"][None], feats1["kpts_normalized"][None]
+        d0, d1 = feats0["all_desc0"][None], feats1["all_desc0"][None]
+        scores = self.matcher(k0, k1, d0, d1)["scores"]
+        m0, _, mscores0, _ = filter_matches(scores, self.matcher.cfg.filter_threshold)
+
+        # LoMa returns bfloat16 confidences; cast to float so numpy can convert them.
+        valid = m0[0] > -1
+        return torch.where(valid)[0], m0[0][valid], mscores0[0][valid].float()
 
     def _forward(self, img0, img1):
         img0, img0_orig_shape = self.preprocess(img0)
