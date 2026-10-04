@@ -148,6 +148,11 @@ def test_extract_batch():
     assert [r["all_kpts0"].tolist() for r in results] == [[[59, 39]], [[29, 19]]]
 
 
+def test_supports_batches_default():
+    """Matchers default to looping over a batch one pair at a time."""
+    assert _CornerMatcher().supports_batches is False
+
+
 @pytest.mark.parametrize("model_name", available_models)
 def test_create_matcher(model_name, device):
     """Instantiate each available matcher and verify device assignment.

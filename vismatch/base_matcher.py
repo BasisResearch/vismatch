@@ -33,6 +33,9 @@ class BaseMatcher(torch.nn.Module):
         super().__init__()
         self.device: str = device
 
+        # Matchers that set this to True batch natively; others loop over a batch one pair at a time
+        self.supports_batches: bool = False
+
         self.skip_ransac: bool = False
 
         # OpenCV default ransac params
