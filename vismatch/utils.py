@@ -485,6 +485,9 @@ def to_tensor_image(img):
         img = torch.from_numpy(img)
     assert isinstance(img, torch.Tensor), "img should be a torch.Tensor, a path, or a PIL Image"
     assert img.ndim == 3 and img.shape[0] == 3, f"img should have shape (3, H, W), got {img.shape}"
+    # uint8 is always in range; scale to [0, 1] on the image's own device
+    if img.dtype == torch.uint8:
+        return img.float() / 255
     # Small tolerance of 0.2 because images after bicubic resizing can slightly exceed the [0, 1] range
     # This is expected, not a bug, see https://github.com/opencv/opencv/issues/7195
     assert -0.2 <= img.min() and img.max() <= 1.2, f"img should be in [0, 1], got [{img.min()}, {img.max()}]"

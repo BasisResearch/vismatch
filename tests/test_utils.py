@@ -6,9 +6,10 @@ with one pair per line.
 """
 
 import pytest
+import torch
 from pathlib import Path
 
-from vismatch.utils import get_image_pairs_paths
+from vismatch.utils import get_image_pairs_paths, to_tensor_image
 
 
 def test_two_image_paths(test_image_paths):
@@ -40,3 +41,12 @@ def test_invalid_input_raises():
     """Verify that a nonexistent path raises ValueError or AssertionError."""
     with pytest.raises((ValueError, AssertionError)):
         get_image_pairs_paths([Path("/nonexistent/path")])
+
+
+@pytest.mark.parametrize("to_input", [lambda x: x, lambda x: x.numpy()], ids=["tensor", "numpy"])
+def test_to_tensor_image_uint8(to_input):
+    """A uint8 (3, H, W) image is scaled to [0, 1] floats, exactly as converting it by hand."""
+    img = torch.randint(0, 256, (3, 20, 30), dtype=torch.uint8)
+    out = to_tensor_image(to_input(img))
+    assert out.dtype == torch.float32
+    torch.testing.assert_close(out, img.float() / 255, rtol=0, atol=0)
