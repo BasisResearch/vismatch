@@ -46,6 +46,19 @@ kpts = matcher.extract([img0, img1])
 # kpts[0]["all_kpts0"], kpts[1]["all_kpts0"]
 ```
 
+Matchers that detect each image independently (currently `xfeat` in sparse mode and `loma`) set
+`matcher.supports_batches = True`. For them, `extract()` runs one batched detection, and `match()` matches
+two `extract()` results without detecting again. Besides the usual match keys (without `all_kpts0/1` and
+`all_desc0/1`), it returns `matched_idxs0/1`, the rows of each image's `all_kpts0` behind the matches:
+
+```python
+feats = matcher.extract([img0, img1, img2])  # one detection pass
+result = matcher.match(feats[0], feats[2])
+# result["matched_kpts0"] == feats[0]["all_kpts0"][result["matched_idxs0"]]
+```
+
+Other matchers raise `NotImplementedError` from `match()`.
+
 ## Ensemble Matching
 
 Pass a list of matcher names to combine multiple models:
