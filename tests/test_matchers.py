@@ -17,6 +17,7 @@ vismatch_match.py:
 import pytest
 import numpy as np
 import torch
+from unittest.mock import patch
 
 import vismatch
 from vismatch import get_matcher, available_models, BaseMatcher
@@ -313,3 +314,17 @@ def test_extract_keypoints(model_name, device, test_image_paths):
         assert result["all_kpts0"].shape[1] == 2
 
     del matcher
+
+
+def test_forward_batch_native():
+    """With supports_batches, a batch of pairs matches through extract() and match(), equal to each pair on its own."""
+    matcher = _GridMatcher()
+    imgs0, imgs1 = [torch.rand(3, 40, 60), torch.rand(3, 20, 30)], [torch.rand(3, 30, 50), torch.rand(3, 50, 70)]
+    with patch.object(matcher, "_forward", wraps=matcher._forward) as forward_spy:
+        results = matcher.forward(imgs0, imgs1)
+    assert forward_spy.call_count == 0
+
+    for result, img0, img1 in zip(results, imgs0, imgs1):
+        expected = matcher.forward(img0, img1)
+        for key in ("matched_kpts0", "matched_kpts1", "all_kpts0", "all_kpts1", "all_desc0", "all_desc1"):
+            np.testing.assert_array_equal(result[key], expected[key])

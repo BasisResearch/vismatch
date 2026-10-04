@@ -142,11 +142,19 @@ class BaseMatcher(torch.nn.Module):
                 - matched_confidences (np.ndarray | None): (N2,) per-match confidence scores, None if the matcher does not provide confidence (pre-RANSAC).
         """
 
-        # A batch of pairs is matched one pair at a time
+        # A batch of pairs is matched one pair at a time, unless the matcher batches natively
         if is_batch(img0) or is_batch(img1):
             assert is_batch(img0) and is_batch(img1) and len(img0) == len(img1), (
                 "img0 and img1 must both be single images or batches of the same length"
             )
+            if self.supports_batches:
+                feats0, feats1 = self.extract(img0), self.extract(img1)
+                return [
+                    self.match(f0, f1)
+                    | {"all_kpts0": f0["all_kpts0"], "all_kpts1": f1["all_kpts0"]}
+                    | {"all_desc0": f0["all_desc0"], "all_desc1": f1["all_desc0"]}
+                    for f0, f1 in zip(feats0, feats1)
+                ]
             return [self.forward(i0, i1) for i0, i1 in zip(img0, img1)]
 
         # Take as input a pair of images
