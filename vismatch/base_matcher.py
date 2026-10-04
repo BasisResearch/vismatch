@@ -17,14 +17,14 @@ class BaseMatcher(torch.nn.Module):
     """
 
     def __init_subclass__(cls, **kwargs):
-        # Run each wrapper-defined matcher's __init__ and _forward inside that wrapper's
+        # Run each wrapper-defined matcher's __init__, _forward and feature hooks inside that wrapper's
         # ImportSandbox: third-party code does lazy imports at construction time (MINIMA, EDM's
         # yacs configs) and at inference time (xfeat's lighterglue), and EnsembleMatcher /
         # Keypt2SubpxMatcher call inner matchers' _forward directly, bypassing forward().
         super().__init_subclass__(**kwargs)
         if not cls.__module__.startswith("vismatch.im_models."):
             return
-        for method_name in ("__init__", "_forward"):
+        for method_name in ("__init__", "_forward", "_extract_features", "_match_features"):
             method = cls.__dict__.get(method_name)
             if method is not None:
                 setattr(cls, method_name, sandboxed_method(method, cls.__module__))
@@ -222,7 +222,20 @@ class BaseMatcher(torch.nn.Module):
             dict | list[dict]: result dict (for a batch, a list with one per image) with keys:
                 - all_kpts0 (np.ndarray): (N, 2) detected keypoints
                 - all_desc0 (np.ndarray): (N, D) descriptors
+                - image_size (tuple): (W, H) of the image, only for matchers with supports_batches
+                - any model-specific extras that match() needs, only for matchers with supports_batches
         """
+        # Matchers with native batching detect all images at once, skipping forward()'s self-pair match and RANSAC
+        if self.supports_batches:
+            imgs = [to_tensor_image(i).to(self.device) for i in (img if is_batch(img) else [img])]
+            with torch.inference_mode():
+                feats = self._extract_features(imgs)
+            feats = [
+                {**{k: to_numpy(v) for k, v in f.items()}, "image_size": (i.shape[-1], i.shape[-2])}
+                for f, i in zip(feats, imgs)
+            ]
+            return feats if is_batch(img) else feats[0]
+
         if is_batch(img):
             return [self.extract(i) for i in img]
         result = self.forward(img, img)

@@ -153,6 +153,55 @@ def test_supports_batches_default():
     assert _CornerMatcher().supports_batches is False
 
 
+class _GridMatcher(BaseMatcher):
+    """Detects a 3-point grid scaled to each image and matches keypoint i to keypoint i, natively batched."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.supports_batches = True
+
+    def _extract_features(self, imgs):
+        feats = []
+        for img in imgs:
+            h, w = img.shape[-2:]
+            kpts = torch.tensor([[0.0, 0.0], [w / 2, h / 2], [w - 1, h - 1]])
+            feats.append({"all_kpts0": kpts, "all_desc0": torch.eye(3), "extra": kpts * 2})
+        return feats
+
+    def _match_features(self, feats0, feats1):
+        idxs = torch.arange(3)
+        return idxs, idxs, torch.ones(3)
+
+    def _forward(self, img0, img1):
+        f0, f1 = self._extract_features([img0, img1])
+        return (
+            f0["all_kpts0"],
+            f1["all_kpts0"],
+            f0["all_kpts0"],
+            f1["all_kpts0"],
+            f0["all_desc0"],
+            f1["all_desc0"],
+            None,
+        )
+
+
+def test_extract_native_matches_forward():
+    """With supports_batches, extract() returns forward()'s keypoints and descriptors, the image size and model extras."""
+    matcher, img = _GridMatcher(), torch.rand(3, 40, 60)
+    feats, expected = matcher.extract(img), matcher.forward(img, img)
+    np.testing.assert_array_equal(feats["all_kpts0"], expected["all_kpts0"])
+    np.testing.assert_array_equal(feats["all_desc0"], expected["all_desc0"])
+    assert feats["image_size"] == (60, 40)
+    assert isinstance(feats["extra"], np.ndarray)
+
+
+def test_extract_native_batch():
+    """With supports_batches, extract() on a batch returns one result per image, each with its own image size."""
+    results = _GridMatcher().extract([torch.rand(3, 40, 60), torch.rand(3, 20, 30)])
+    assert [r["image_size"] for r in results] == [(60, 40), (30, 20)]
+    assert [r["all_kpts0"][-1].tolist() for r in results] == [[59, 39], [29, 19]]
+
+
 @pytest.mark.parametrize("model_name", available_models)
 def test_create_matcher(model_name, device):
     """Instantiate each available matcher and verify device assignment.
