@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import vismatch
 from vismatch import get_matcher, available_models, BaseMatcher
+from vismatch.utils import to_numpy
 
 
 def test_import_vismatch_main():
@@ -234,6 +235,61 @@ def test_match_not_implemented():
     """match() needs a matcher with supports_batches; others must use forward()."""
     with pytest.raises(NotImplementedError, match="use forward"):
         _CornerMatcher().match({}, {})
+
+
+def test_match_batch_matches_match():
+    """match_batch() gives match() per pair, out-of-bounds filtering included, and loops _match_features."""
+    matcher = _GridMatcher()
+    feats = [matcher.extract(torch.rand(3, h, w)) for h, w in [(40, 60), (30, 50), (20, 30)]]
+    feats[2]["image_size"] = (16, 11)  # only the (0, 0) and (15, 10) keypoints are inside
+    pairs = [(feats[0], feats[1]), (feats[1], feats[2]), (feats[2], feats[0])]
+    with patch.object(matcher, "_match_features", wraps=matcher._match_features) as spy:
+        results = matcher.match_batch(pairs)
+    assert spy.call_count == 3
+
+    for result, (f0, f1) in zip(results, pairs):
+        expected = matcher.match(f0, f1)
+        assert result.keys() == expected.keys()
+        for key in ("matched_kpts0", "matched_kpts1", "matched_idxs0", "matched_idxs1", "matched_confidences"):
+            np.testing.assert_array_equal(result[key], expected[key])
+    assert [len(r["matched_idxs0"]) for r in results] == [3, 2, 2]
+
+
+def test_match_batch_empty():
+    """match_batch() of no pairs is an empty list."""
+    assert _GridMatcher().match_batch([]) == []
+
+
+def test_match_batch_not_implemented():
+    """match_batch() needs a matcher with supports_batches."""
+    with pytest.raises(NotImplementedError, match="use forward"):
+        _CornerMatcher().match_batch([({}, {})])
+
+
+def test_match_batch_xfeat(device, test_image_paths):
+    """xfeat match_batch() matches all pairs in one forward, equal to XFeat.match on each pair."""
+    try:
+        matcher = get_matcher("xfeat", device=device)
+    except Exception as e:
+        pytest.skip(f"Cannot instantiate xfeat on {device}: {e}")
+    feats = [matcher.extract(img) for img in _load_pair(matcher, test_image_paths)]
+
+    # Unequal keypoint counts exercise the padding, an empty table the zero-match path
+    short = {**feats[0], "all_kpts0": feats[0]["all_kpts0"][:300], "all_desc0": feats[0]["all_desc0"][:300]}
+    empty = {**feats[0], "all_kpts0": feats[0]["all_kpts0"][:0], "all_desc0": feats[0]["all_desc0"][:0]}
+    pairs = [(f0, f1) for f0 in feats for f1 in feats if f0 is not f1] + [(short, feats[1]), (feats[1], short)]
+    with patch.object(matcher, "_match_features", wraps=matcher._match_features) as spy:
+        results = matcher.match_batch(pairs + [(empty, feats[1]), (feats[1], empty)])
+    assert spy.call_count == 0
+
+    for result, (f0, f1) in zip(results, pairs):
+        d0, d1 = (torch.as_tensor(f["all_desc0"], device=device) for f in (f0, f1))
+        idxs0, idxs1 = matcher.model.match(d0, d1, min_cossim=-1)
+        assert len(result["matched_idxs0"]) > 0
+        np.testing.assert_array_equal(result["matched_idxs0"], to_numpy(idxs0))
+        np.testing.assert_array_equal(result["matched_idxs1"], to_numpy(idxs1))
+        np.testing.assert_array_equal(result["matched_kpts0"], f0["all_kpts0"][result["matched_idxs0"]])
+    assert [len(r["matched_idxs0"]) for r in results[-2:]] == [0, 0]
 
 
 @pytest.mark.parametrize("module, cls", [("xfeat", "xFeatMatcher"), ("loma", "LoMaMatcher")])

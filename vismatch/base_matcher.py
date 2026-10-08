@@ -157,10 +157,10 @@ class BaseMatcher(torch.nn.Module):
             if self.supports_batches:
                 feats0, feats1 = self.extract(img0), self.extract(img1)
                 return [
-                    self.match(f0, f1)
+                    result
                     | {"all_kpts0": f0["all_kpts0"], "all_kpts1": f1["all_kpts0"]}
                     | {"all_desc0": f0["all_desc0"], "all_desc1": f1["all_desc0"]}
-                    for f0, f1 in zip(feats0, feats1)
+                    for result, f0, f1 in zip(self.match_batch(list(zip(feats0, feats1))), feats0, feats1)
                 ]
             return [self.forward(i0, i1) for i0, i1 in zip(img0, img1)]
 
@@ -257,7 +257,6 @@ class BaseMatcher(torch.nn.Module):
         kpts = result["matched_kpts0"] if isinstance(self, EnsembleMatcher) else result["all_kpts0"]
         return {"all_kpts0": kpts, "all_desc0": result["all_desc0"]}
 
-    @torch.inference_mode()
     def match(self, feats0: dict, feats1: dict) -> dict:
         """Match two images from their extract() outputs, without detecting again. Needs supports_batches.
 
@@ -270,47 +269,77 @@ class BaseMatcher(torch.nn.Module):
                 - matched_idxs0 (np.ndarray): (N2,) rows of feats0["all_kpts0"] behind matched_kpts0
                 - matched_idxs1 (np.ndarray): (N2,) rows of feats1["all_kpts0"] behind matched_kpts1
         """
+        return self.match_batch([(feats0, feats1)])[0]
+
+    @torch.inference_mode()
+    def match_batch(self, pairs: list[tuple[dict, dict]]) -> list[dict]:
+        """Match many pairs of extract() outputs in one call, each result equal to match() on that pair.
+
+        Matchers that override _match_features_batch() match all pairs in one forward; others loop
+        _match_features(). Device-to-host copies happen once for the whole batch, so callers should
+        pass as many pairs as fit in memory (xfeat: B x N0 x N1 floats, twice).
+
+        Args:
+            pairs (list[tuple[dict, dict]]): (feats0, feats1) extract() outputs; values may be np.ndarray or
+                torch.Tensor on any device
+
+        Returns:
+            list[dict]: one match() result dict per pair, in order
+        """
         if not self.supports_batches:
             raise NotImplementedError(f"{self.name} cannot match precomputed features, use forward()")
+        if len(pairs) == 0:
+            return []
 
         # Move features to the matcher's device, a no-op for features already there
-        (w0, h0), (w1, h1) = feats0["image_size"], feats1["image_size"]
+        sizes = [(f0["image_size"], f1["image_size"]) for f0, f1 in pairs]
         feats0, feats1 = (
-            {k: torch.as_tensor(v, device=self.device) for k, v in f.items() if k != "image_size"}
-            for f in (feats0, feats1)
+            [{k: torch.as_tensor(v, device=self.device) for k, v in f.items() if k != "image_size"} for f in side]
+            for side in zip(*pairs)
         )
 
-        # self._match_features() returns indices into each keypoint table, and confidences or None
-        idxs0, idxs1, matched_confidences = self._match_features(feats0, feats1)
-        matched_kpts0, matched_kpts1 = to_numpy(feats0["all_kpts0"][idxs0]), to_numpy(feats1["all_kpts0"][idxs1])
-        idxs0, idxs1, matched_confidences = to_numpy(idxs0), to_numpy(idxs1), to_numpy(matched_confidences)
+        # _match_features_batch() returns per pair indices into each keypoint table, and confidences or None
+        matches = self._match_features_batch(feats0, feats1)
 
-        # Drop matches with a kpt outside its image, as forward() does
-        valid = (
-            (matched_kpts0 >= 0) & (matched_kpts0 < [w0, h0]) & (matched_kpts1 >= 0) & (matched_kpts1 < [w1, h1])
-        ).all(1)
-        matched_kpts0, matched_kpts1, idxs0, idxs1 = (
-            matched_kpts0[valid],
-            matched_kpts1[valid],
-            idxs0[valid],
-            idxs1[valid],
-        )
-        if matched_confidences is not None:
-            matched_confidences = matched_confidences[valid]
+        # One device-to-host copy for every pair: concatenate, convert, split back by match count
+        counts = [len(idxs0) for idxs0, _, _ in matches]
+        splits = np.cumsum(counts)[:-1]
+        has_conf = matches[0][2] is not None
+        kpts0 = torch.cat([f["all_kpts0"][idxs0] for f, (idxs0, _, _) in zip(feats0, matches)])
+        kpts1 = torch.cat([f["all_kpts0"][idxs1] for f, (_, idxs1, _) in zip(feats1, matches)])
+        idxs0 = torch.cat([idxs0 for idxs0, _, _ in matches])
+        idxs1 = torch.cat([idxs1 for _, idxs1, _ in matches])
+        confs = torch.cat([conf for _, _, conf in matches]) if has_conf else None
+        kpts0, kpts1, idxs0, idxs1 = (np.split(to_numpy(x), splits) for x in (kpts0, kpts1, idxs0, idxs1))
+        confs = np.split(to_numpy(confs), splits) if has_conf else [None] * len(pairs)
 
-        H, inlier_kpts0, inlier_kpts1 = self.compute_ransac(matched_kpts0, matched_kpts1)
+        results = []
+        for ((w0, h0), (w1, h1)), k0, k1, i0, i1, conf in zip(sizes, kpts0, kpts1, idxs0, idxs1, confs):
+            # Drop matches with a kpt outside its image, as forward() does
+            valid = ((k0 >= 0) & (k0 < [w0, h0]) & (k1 >= 0) & (k1 < [w1, h1])).all(1)
+            k0, k1, i0, i1 = k0[valid], k1[valid], i0[valid], i1[valid]
+            if conf is not None:
+                conf = conf[valid]
 
-        return {
-            "num_inliers": len(inlier_kpts0),
-            "H": H,
-            "matched_kpts0": matched_kpts0,
-            "matched_kpts1": matched_kpts1,
-            "inlier_kpts0": inlier_kpts0,
-            "inlier_kpts1": inlier_kpts1,
-            "matched_confidences": matched_confidences,
-            "matched_idxs0": idxs0,
-            "matched_idxs1": idxs1,
-        }
+            H, inlier_kpts0, inlier_kpts1 = self.compute_ransac(k0, k1)
+            results.append(
+                {
+                    "num_inliers": len(inlier_kpts0),
+                    "H": H,
+                    "matched_kpts0": k0,
+                    "matched_kpts1": k1,
+                    "inlier_kpts0": inlier_kpts0,
+                    "inlier_kpts1": inlier_kpts1,
+                    "matched_confidences": conf,
+                    "matched_idxs0": i0,
+                    "matched_idxs1": i1,
+                }
+            )
+        return results
+
+    def _match_features_batch(self, feats0: list[dict], feats1: list[dict]) -> list[tuple]:
+        """Match pair i of (feats0[i], feats1[i]) for every i; matchers that batch natively override this."""
+        return [self._match_features(f0, f1) for f0, f1 in zip(feats0, feats1)]
 
     @staticmethod
     def get_empty_array_if_none(array: np.ndarray | None) -> np.ndarray:
